@@ -76,12 +76,16 @@ cleaner_rrids %>% count(spawner_group)
 ```
 #what is the best way to display the muliple dates for spawning? as multiple columns? I can easily split the dates...
 ```{r}
-cleaner_rrids %>% 
+spawn_col <- cleaner_rrids %>% 
   separate(spawner_group, c("spawn_1", "spawn_2", "spawn_3"), sep = ",") %>% 
   mutate(num_spawn = case_when(!is.na(spawn_3) ~ 3,
                                !is.na(spawn_2) & is.na(spawn_3) ~ 2, 
-                               is.na(spawn_2) & is.na(spawn_3) ~ 1)) %>% 
-  count(num_spawn)
+                               is.na(spawn_2) & is.na(spawn_3) ~ 1))
+spawn_col %>%   count(num_spawn)
+
+spawn_rows <- spawn_col %>% 
+  pivot_longer(cols = starts_with("spawn_"), names_to = "spawn_event", values_to = "spawn_date") %>% 
+  filter(!is.na(spawn_date))
 ```
 
 
@@ -108,7 +112,7 @@ by the related package.
 ```{r}
 genos <- read_csv("./inst/extdata/RR_2007-2020_wide_genos_rm7_before_msa.csv") %>% 
   rename(indiv = "NMFS_DNA_ID")
-genos_and_meta <- left_join(cleaner_rrids, genos, by = "indiv")
+genos_and_meta <- left_join(spawn_rows, genos, by = "indiv")
 ```
 
 
@@ -205,7 +209,7 @@ Now, nest each year of IDs up:
 #ISSUE HERE
 ```{r}
 library(lubridate)
-years <- cleaner_rrids %>%
+years <- spawn_rows %>%
   group_by(year) %>%
   nest() %>%
   arrange(year) %>%
@@ -213,13 +217,16 @@ years <- cleaner_rrids %>%
 
 years
 #ISSUE HERE, how do we deal with itero fish that have spawned on more than one year?
+#I think I need the long form data
+#still an issue here, could fix my getting year from teh spawn date column if needed
 ```
-#AKB skipped this section
+
 So, here is a function that takes a data frame called data and returns
 all possible rxys between the IDS in that data frame.
+#AKB skipped this section
 ```{r}
 get_rxys <- function(data) {
-  d <- semi_join(rdat$gdata, data, by = c("V1" = "NMFS_DNA_ID"))
+  d <- semi_join(rdat$gdata, data, by = c("V1" = "indiv"))
   rxy1 <- related::coancestry(d, quellergt=1, allele.freqs = rdat$freqs)$relatedness %>%
     as_tibble() %>%
     select(ind1.id, ind2.id, quellergt) %>%
@@ -232,6 +239,7 @@ get_rxys <- function(data) {
 ```
 
 Now, we can apply that to every single one of the years.
+#AKB skipped this
 ```{r, eval=FALSE}
 rxys_in_years <- years %>%
   mutate(pairs = map(data, get_rxys))
@@ -251,6 +259,7 @@ that should be fine...
 
 But, another question I have is whether there are Corrected Spawn dates in the trios that
 don't appear in the `id_sex_date`.  Let's check that out:
+#AKB skipped this
 ```{r}
 missing_dad_dates <- trios %>%
   anti_join(id_sex_date, by = c("Pa_ID" = "NMFS_DNA_ID", "Corrected_ParentSpawn_Date" = "COLLECTION_DATE")) %>%
@@ -283,9 +292,8 @@ trios_to_use <- trios %>%
   
   
 #issue here again...probably need a long form of the data
-day_fish <- cleaner_rrids %>%
-  #separate(spawner_group, c("spawn_1", "spawn_2", "spawn_3"), sep = ",") %>% 
-  mutate(spawn_date = mdy(COLLECTION_DATE)) %>%
+day_fish <- spawn_rows %>%
+  mutate(spawn_date = mdy(spawn_date)) %>%
   group_by(spawn_date) %>%
   nest() %>%
   semi_join(trios_to_use, by = "spawn_date") %>%
@@ -320,8 +328,8 @@ nested_trios <- trios_to_use %>%
   nest() %>%
   arrange(spawn_date) %>%
   mutate(n_trios = map_int(data, nrow),
-         n_dads = map_int(data, function(x) n_distinct(x$Pa_ID)),
-         n_moms = map_int(data, function(x) n_distinct(x$Ma_ID))) %>%
+         n_dads = map_int(data, function(x) n_distinct(x$pa)),
+         n_moms = map_int(data, function(x) n_distinct(x$ma))) %>%
   rename(trios = data)
 
 interm1 <- rxys_in_days %>%
@@ -355,6 +363,7 @@ So, there are a couple of things that might happen:
 2. Ma is not amongst females, but is in males.  
 
 And same for males.  So, let's just do a quick check.
+#AKB skipped this
 ```{r}
 missy <- interm1 %>%
   mutate(num_ma_totally_absent = map2_int(trios, spawners,
@@ -386,6 +395,7 @@ swap their sexes around to fix the problem.
 
 First, see if any spawners on a day are more than once with the same sex, and also twice with
 different sexes...
+#AKB skipped this
 ```{r}
 two_faced_sexes <- interm1 %>%
   mutate(n_spawn_dupes = map_int(spawners, 
@@ -407,6 +417,7 @@ show up in the Pa_ID column and also in the Ma_ID column.  That stuffs
 things up a fair bit, making it harder to do the permutations.
 
 So, what fraction of days is that:
+#AKB skipped this
 ```{r}
 mean(two_faced_sexes$n_both_sexes > 0)
 ```
@@ -418,6 +429,7 @@ spawner records.
 I suppose we could just toss those ambiguous indivs out, but it is tidier to just toss out some days.
 
 ### Toss out days that have trios with conflicting sex assignments
+#AKB skipped this
 ```{r}
 keep_days <- two_faced_sexes %>%
   filter(n_both_sexes == 0) %>%
@@ -430,28 +442,30 @@ interm2 <- semi_join(interm1, keep_days)
 
 This should not be too hard.  We just make a new column that holds spawners,
 but in which Male and Female have been updated as need be.
+
 ```{r}
-interm3 <- interm2 %>%
+interm3 <- interm1 %>%
   mutate(spawners_mod = map2(.x = spawners, .y = trios,
                              .f = function(spaw, tdf) {
                                spaw %>%
-                                 mutate(SEX = case_when(
-                                   NMFS_DNA_ID %in% tdf$Ma_ID ~ "Female",
-                                   NMFS_DNA_ID %in% tdf$Pa_ID ~ "Male",
-                                   TRUE ~ SEX
+                                 mutate(new_sex = case_when(
+                                   indiv %in% tdf$ma ~ "Female",
+                                   indiv %in% tdf$pa ~ "Male",
+                                   TRUE ~ new_sex
                                  ))
                              }))
 ```
 
-That did change some things:
+
 ```{r}
 interm3 %>% 
-  mutate(nf = map_int(spawners_mod, function(x) {x %>% filter(SEX == "Female") %>% nrow()}),  nf_old = map_int(spawners, function(x) {x %>% filter(SEX == "Female") %>% 
+  mutate(nf = map_int(spawners_mod, function(x) {x %>% filter(new_sex == "Female") %>% nrow()}),  nf_old = map_int(spawners, function(x) {x %>% filter(new_sex == "Female") %>% 
       nrow()})) %>% 
   filter(nf != nf_old)
 ```
 
 Let's see if it has corrected the problem:
+#AKB SKipped this
 ```{r}
 missy3 <- interm3 %>%
   mutate(num_ma_totally_absent = map2_int(trios, spawners_mod,
@@ -489,7 +503,7 @@ Here is a function for extracting the actual Rxy:
 #' @param tdf trio data frame.  An element of the trios list column
 #' @param rxyp rxy_pairs data frame.  An element of the rxy_pairs list column
 extract_observed_rxy <- function(tdf, rxyp) {
-  left_join(tdf, rxyp, by = c("Pa_ID" = "ind1", "Ma_ID" = "ind2"))
+  left_join(tdf, rxyp, by = c("pa" = "ind1", "ma" = "ind2"))
 }
 ```
 
@@ -504,28 +518,28 @@ believe.  We do it all with a few joins in series.
 extract_permuted_rxy <- function(tdf, rxyp, spaw, nperm = 100) {
   
   # vectors of males and females observed in trios
-  obs_males <- unique(tdf$Pa_ID)
-  obs_females <- unique(tdf$Ma_ID)
+  obs_males <- unique(tdf$pa)
+  obs_females <- unique(tdf$ma)
   
   # vectors of the males and females that were actually spawned on that day
   smales <- spaw %>%
-    filter(SEX == "Male") %>%
-    pull(NMFS_DNA_ID)
+    filter(new_sex == "Male") %>%
+    pull(indiv)
   
   sfemales <- spaw %>%
-    filter(SEX == "Female") %>%
-    pull(NMFS_DNA_ID)
+    filter(new_sex == "Female") %>%
+    pull(indiv)
   
   # tibbles of permuted males (females) assigned to observed males (females)
   pmales <- tibble(
     perm = rep(1:nperm, each = length(obs_males)),
-    Pa_ID = rep(obs_males, times = nperm),
+    pa = rep(obs_males, times = nperm),
     ind1 = unlist(lapply(1:nperm, function(i) sample(x = smales, size = length(obs_males), replace = FALSE)))
   )
   
   pfemales <- tibble(
     perm = rep(1:nperm, each = length(obs_females)),
-    Ma_ID = rep(obs_females, times = nperm),
+    ma = rep(obs_females, times = nperm),
     ind2 = unlist(lapply(1:nperm, function(i) sample(x = sfemales, size = length(obs_females), replace = FALSE)))
   )
   
@@ -534,15 +548,15 @@ extract_permuted_rxy <- function(tdf, rxyp, spaw, nperm = 100) {
   # but those might be useful later.  This is where we should come back to get it if we need it
   # later. In fact, I do that (by commenting a few lines out) here so that I will be able to assess things later.
   tdf %>% 
-    left_join(pmales, by = "Pa_ID") %>%
-    left_join(pfemales, by = c("perm", "Ma_ID")) %>%
-    arrange(perm, Pa_ID, Ma_ID) %>%
+    left_join(pmales, by = "pa") %>%
+    left_join(pfemales, by = c("perm", "ma")) %>%
+    arrange(perm, pa, ma) %>%
     left_join(rxyp, by = c("ind1", "ind2")) # %>%
     # select(perm, quellergt)
 }
 ```
 
-
+##HERE Now, it almost works....
 So, now we just need to use those...
 ```{r}
 set.seed(100)  # for reproducibility
