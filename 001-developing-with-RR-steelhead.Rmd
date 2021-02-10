@@ -217,7 +217,7 @@ years <- spawn_rows %>%
 
 years
 #ISSUE HERE, how do we deal with itero fish that have spawned on more than one year?
-#still an issue here, could fix my getting year from teh spawn date column if needed
+#still an issue here, could fix by getting year from teh spawn date column if needed
 ```
 
 So, here is a function that takes a data frame called data and returns
@@ -278,30 +278,53 @@ But, for now, we will compute the rxys between pairs on a daily basis.  Pretty m
 given the machinery that we have prepared above. Note that we may as well filter out any days
 that we don't have returning trios for.  This might toss out some of the dates that list one spawner.
 #AKB resuming here to try by date
+#Need to seperate by hatcheries -- Warm springs and coyote valley
 ```{r}
 library(lubridate)
 trios <- read_csv("./inst/extdata/RR_pedigree_07-20_known_sexes_and_dates.csv")
 trios %>% count(parent_sg)
-trios_to_use <- trios %>%
+trios %>% count(ma_hatchery)
+
+trios_to_use_WS <- trios %>%
   filter(parent_sg != "NULL", 
          parent_sg != "?" , 
          parent_sg != 'c("02/16/12", "02/10/12")', 
          parent_sg != 'c("03/03/11", "02/26/11")') %>%
   filter(new_ma_sex == "Female", new_pa_sex == "Male") %>% 
+  filter(ma_hatchery == "Warm_Springs") %>% 
+  select(SpawnYear, pa, ma, parent_sg) %>%
+  mutate(spawn_date = mdy(parent_sg))
+
+trios_to_use_CV <- trios %>%
+  filter(parent_sg != "NULL", 
+         parent_sg != "?" , 
+         parent_sg != 'c("02/16/12", "02/10/12")', 
+         parent_sg != 'c("03/03/11", "02/26/11")') %>%
+  filter(new_ma_sex == "Female", new_pa_sex == "Male") %>% 
+  filter(ma_hatchery == "Coyote_Valley") %>% 
   select(SpawnYear, pa, ma, parent_sg) %>%
   mutate(spawn_date = mdy(parent_sg))
   
-  
+  #here! I need to make two data files, one for WS and one for CV
 
-day_fish <- spawn_rows %>%
+day_fish_WS <- spawn_rows %>%
   mutate(spawn_date = mdy(spawn_date)) %>%
   group_by(spawn_date) %>%
   nest() %>%
-  semi_join(trios_to_use, by = "spawn_date") %>%
+  semi_join(trios_to_use_WS, by = "spawn_date") %>%
   arrange(spawn_date) %>%
   mutate(num_fish = map_int(data, nrow))
 
-day_fish
+day_fish_CV <- spawn_rows %>%
+  mutate(spawn_date = mdy(spawn_date)) %>%
+  group_by(spawn_date) %>%
+  nest() %>%
+  semi_join(trios_to_use_CV, by = "spawn_date") %>%
+  arrange(spawn_date) %>%
+  mutate(num_fish = map_int(data, nrow))
+
+day_fish_WS
+day_fish_CV
 ```
 
 Reassuringly, there are not any days with 1 spawner that produced trios....
@@ -309,7 +332,10 @@ Reassuringly, there are not any days with 1 spawner that produced trios....
 Anyway, now that we have 171 different days, from which some trios were
 identified, we can compute the rxys for all the possible parents on those days.
 ```{r}
-rxys_in_days <- day_fish %>%
+rxys_in_days_WS <- day_fish_WS %>%
+  mutate(pairs = map(data, get_rxys))
+
+rxys_in_days_CV <- day_fish_CV %>%
   mutate(pairs = map(data, get_rxys))
 ```
 
@@ -324,7 +350,7 @@ I'll chuck the `rxys_in_years` from the package, and I will save rxys_in_days to
 Clearly the thing to do now is to add into there a list column that has all the
 trios that were assigned to particular spawn dates:
 ```{r}
-nested_trios <- trios_to_use %>%
+nested_trios_WS <- trios_to_use_WS %>%
   group_by(spawn_date) %>%
   nest() %>%
   arrange(spawn_date) %>%
@@ -333,12 +359,27 @@ nested_trios <- trios_to_use %>%
          n_moms = map_int(data, function(x) n_distinct(x$ma))) %>%
   rename(trios = data)
 
-interm1 <- rxys_in_days %>%
+nested_trios_CV <- trios_to_use_CV %>%
+  group_by(spawn_date) %>%
+  nest() %>%
+  arrange(spawn_date) %>%
+  mutate(n_trios = map_int(data, nrow),
+         n_dads = map_int(data, function(x) n_distinct(x$pa)),
+         n_moms = map_int(data, function(x) n_distinct(x$ma))) %>%
+  rename(trios = data)
+
+interm1_WS <- rxys_in_days_WS %>%
   rename(spawners = data,
          rxy_pairs = pairs) %>%
-  left_join(nested_trios, by = "spawn_date")
+  left_join(nested_trios_WS, by = "spawn_date")
 
-interm1
+interm1_CV <- rxys_in_days_CV %>%
+  rename(spawners = data,
+         rxy_pairs = pairs) %>%
+  left_join(nested_trios_CV, by = "spawn_date")
+
+interm1_WS
+interm1_CV
 ```
 
 OK, `interm1` basically has everything that we need to operate on each spawn
@@ -557,12 +598,20 @@ extract_permuted_rxy <- function(tdf, rxyp, spaw, nperm = 100) {
 }
 ```
 
-##HERE Now, it almost works....
+
 So, now we just need to use those...
-#switched it to "interm1" instead of "interm3" the code above seemed unnecessary and kept leading to problems
+#switched it to "interm1" instead of "interm3" the code above seemed unnecessary with the 2007-2020 dataset
 ```{r}
+#Warm Springs
 set.seed(100)  # for reproducibility
-permy_results <- interm1 %>%
+permy_results_WS <- interm1_WS %>%
+  mutate(obs_rxy = map2(.x = trios, .y = rxy_pairs, .f = extract_observed_rxy),
+         perm_rxy = pmap(.l = list(trios, rxy_pairs, spawners), .f = extract_permuted_rxy, nperm = 100)
+         )
+
+#Coyote Valley
+set.seed(100)  # for reproducibility
+permy_results_CV <- interm1_CV %>%
   mutate(obs_rxy = map2(.x = trios, .y = rxy_pairs, .f = extract_observed_rxy),
          perm_rxy = pmap(.l = list(trios, rxy_pairs, spawners), .f = extract_permuted_rxy, nperm = 100)
          )
@@ -572,18 +621,35 @@ permy_results <- interm1 %>%
 
 Quick look at means:
 ```{r}
-obs_means <- permy_results %>%
+##Warm springs
+obs_means_WS <- permy_results_WS %>%
   mutate(obs_mean = map_dbl(obs_rxy, function(x) mean(x$quellergt))) %>%
   select(spawn_date, obs_mean)
 
-perm_means <- permy_results %>%
+perm_means_WS <- permy_results_WS %>%
   mutate(perm_means = map(perm_rxy, function(x) x %>% group_by(perm) %>% summarise(perm_mean = mean(quellergt)))) %>%
   select(spawn_date, perm_means) %>%
   unnest(perm_means)
 
 # now, we can join those on spawn date:
-the_means <- obs_means %>%
-  left_join(perm_means, by = "spawn_date") %>%
+the_means_WS <- obs_means_WS %>%
+  left_join(perm_means_WS, by = "spawn_date") %>%
+  group_by(spawn_date) %>%
+  mutate(perm_means_mean = mean(perm_mean))
+
+##Coyote Valley
+obs_means_CV <- permy_results_CV %>%
+  mutate(obs_mean = map_dbl(obs_rxy, function(x) mean(x$quellergt))) %>%
+  select(spawn_date, obs_mean)
+
+perm_means_CV <- permy_results_CV %>%
+  mutate(perm_means = map(perm_rxy, function(x) x %>% group_by(perm) %>% summarise(perm_mean = mean(quellergt)))) %>%
+  select(spawn_date, perm_means) %>%
+  unnest(perm_means)
+
+# now, we can join those on spawn date:
+the_means_CV <- obs_means_CV %>%
+  left_join(perm_means_CV, by = "spawn_date") %>%
   group_by(spawn_date) %>%
   mutate(perm_means_mean = mean(perm_mean))
 
@@ -592,44 +658,87 @@ the_means <- obs_means %>%
 
 Now, we can plot those means:
 ```{r}
-ggplot(the_means, aes(x = perm_means_mean, y = obs_mean)) + 
+#warm springs
+ggplot(the_means_WS, aes(x = perm_means_mean, y = obs_mean)) + 
   geom_point(colour = "blue") +
   geom_abline(intercept = 0, slope = 1)
 ```
+```{r}
+#coyote valley
+ggplot(the_means_CV, aes(x = perm_means_mean, y = obs_mean)) + 
+  geom_point(colour = "blue") +
+  geom_abline(intercept = 0, slope = 1)
+```
+
 That isn't super compelling.  So, there does not seem to be a super noticeable effect on means.
 
 ### So, let's look at distributions of value across all days
 
 ```{r}
-obs_dsn <- permy_results %>%
+#Warm springs
+obs_dsn_WS <- permy_results_WS %>%
   select(spawn_date, obs_rxy) %>%
   unnest(obs_rxy) %>%
   select(spawn_date, quellergt)
 
-permy_dsn <-  permy_results %>%
+permy_dsn_WS <-  permy_results_WS %>%
   select(spawn_date, perm_rxy) %>%
   unnest(perm_rxy)
 
-the_dsns <- bind_rows(list(observed = obs_dsn, permuted = permy_dsn),
+the_dsns_WS <- bind_rows(list(observed = obs_dsn_WS, permuted = permy_dsn_WS),
                       .id = "type")
   
-histo <- ggplot(the_dsns, aes(x = quellergt, fill = type)) + 
+histo <- ggplot(the_dsns_WS, aes(x = quellergt, fill = type)) + 
   geom_histogram(aes(y = ..density..),
                  position = position_identity(),
-                 alpha = 0.3)
+                 alpha = 0.3)+
+  ggtitle("Warm Springs")
 
 # let's save that big so we can zoom in on it
 dir.create("outputs", showWarnings = FALSE)
-ggsave(histo, filename = "outputs/permy_histo_compare.pdf", width = 10, height = 6)
+ggsave(histo, filename = "outputs/permy_histo_compare_WS.pdf", width = 10, height = 6)
 histo 
 ```
+```{r}
+#Coyote valley
+obs_dsn_CV <- permy_results_CV %>%
+  select(spawn_date, obs_rxy) %>%
+  unnest(obs_rxy) %>%
+  select(spawn_date, quellergt)
+
+permy_dsn_CV <-  permy_results_CV %>%
+  select(spawn_date, perm_rxy) %>%
+  unnest(perm_rxy)
+
+the_dsns_CV <- bind_rows(list(observed = obs_dsn_CV, permuted = permy_dsn_CV),
+                      .id = "type")
+  
+histo <- ggplot(the_dsns_CV, aes(x = quellergt, fill = type)) + 
+  geom_histogram(aes(y = ..density..),
+                 position = position_identity(),
+                 alpha = 0.3)+
+  ggtitle("Coyote Valley")
+
+# let's save that big so we can zoom in on it
+dir.create("outputs", showWarnings = FALSE)
+ggsave(histo, filename = "outputs/permy_histo_compare_CV.pdf", width = 10, height = 6)
+histo 
+```
+
 
 That is not looking like a super big difference either.  Interesting.
 
 How about if we compare the empiricial CDFs:
 ```{r}
-ggplot(the_dsns, aes(x = quellergt, colour = type)) +
-  stat_ecdf()
+#warm springs
+ggplot(the_dsns_WS, aes(x = quellergt, colour = type)) +
+  stat_ecdf()+
+  ggtitle("Warm Springs")
+
+#coyote valley
+ggplot(the_dsns_CV, aes(x = quellergt, colour = type)) +
+  stat_ecdf()+
+  ggtitle("Coyote Valley")
 ```
 
 That is also pretty much the same.  
@@ -670,7 +779,7 @@ dsn_of_female_replacements <- function(pr) {
 Now, with those functions we can spot check a few days:
 ```{r}
 # choose 2011-03-03
-PR1 <- permy_results %>%
+PR1 <- permy_results_CV %>%
   filter(spawn_date == ymd("2011-03-03")) %>%
   pull(perm_rxy)
 
@@ -688,7 +797,7 @@ Now, let's take a look at the observed vs permuted pairwise rxy values on this
 day across all the observed pairs to make sure that things look all right.
 We will spot check that one day.
 ```{r}
-PRT <- permy_results %>%
+PRT <- permy_results_WS %>%
   filter(spawn_date == ymd("2011-03-03"))
 
 joined <- left_join(PRT$obs_rxy[[1]], PRT$perm_rxy[[1]], by = c("pa", "ma")) %>%
@@ -712,35 +821,40 @@ seen in the permutations divided by 100.  Let's check it out.
 ```{r}
 # here is how many we would have expected at rxy > 0.5 from the
 # permutations
-sum(permy_dsn$quellergt > 0.5) / 100
+sum(permy_dsn_CV$quellergt > 0.5) / 100
 ```
 which is a fraction of:
 ```{r}
-(sum(permy_dsn$quellergt > 0.5) / 100) / nrow(obs_dsn)
+(sum(permy_dsn_CV$quellergt > 0.5) / 100) / nrow(obs_dsn_WS)
 ```
 which means that we are only expected 0.14% of the offspring under random mating
 would have inbreeding greater than 0.5.
 
 How many did we observe?
 ```{r}
-sum(obs_dsn$quellergt > 0.5)
+sum(obs_dsn_CV$quellergt > 0.5)
 ```
 So, we saw one of those.
 
 How about over 0.4?
 ```{r}
-sum(obs_dsn$quellergt > 0.4)
+sum(obs_dsn_CV$quellergt > 0.4)
 ```
 So, the effect of inbreeding on survival in this hatchery seems awfully low.  Very interesting.
 
 Let's do some calculations from the Binomial distribution:
 ```{r}
-RP <- rbinom(n = 1e5, size = nrow(obs_dsn), prob = 0.00138205)
+RP <- rbinom(n = 1e5, size = nrow(obs_dsn_WS), prob = 0.00107904)
+hist(RP)
+
+RP_CV <- rbinom(n = 1e5, size = nrow(obs_dsn_CV), prob =0.00098161)
 hist(RP)
 ```
 So, how unusual would it be to find only 1:
 ```{r}
 mean(RP <= 1)
+
+mean(RP_CV <= 1)
 ```
 Pretty small probability.  So, this might be significant.
 
@@ -749,16 +863,24 @@ Pretty small probability.  So, this might be significant.
 We can do better than that by looking at how many offspring by inbreeding
 greater than 0.5 in each of the perms and checking out the distribution there:
 ```{r}
-num_over0.5 <- permy_dsn %>%
+num_over0.5 <- permy_dsn_WS %>%
   group_by(perm) %>%
   summarise(n_over = sum(quellergt > 0.5))
 
 hist(num_over0.5$n_over)
+
+num_over0.5_CV <- permy_dsn_CV %>%
+  group_by(perm) %>%
+  summarise(n_over = sum(quellergt > 0.5))
+
+hist(num_over0.5_CV$n_over)
 ```
 
 And how many of the 100 permutations have 1 or fewer with rxy > 0.5?
 ```{r}
 sum(num_over0.5$n_over <= 1)
+
+sum(num_over0.5_CV$n_over <= 1)
 ```
 
 So, one out of 100 times.  Giving a permutation based p-value of 0.01 (though we would really want to do more permutations...).
