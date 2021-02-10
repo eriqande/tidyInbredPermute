@@ -90,9 +90,6 @@ spawn_rows <- spawn_col %>%
 
 
 
-
-I am going to save that into package data as `id_sex_date`
-
 ## Computing pairwise Rxy
 
 Clearly we don't want to compute this for all possible pairs over the 12 years, or
@@ -205,20 +202,6 @@ setdiff(rdat$gdata$V1, cleaner_rrids$indiv)
 ```
 There are a few there, but that shouldn't cause any problems.
 
-Now, nest each year of IDs up:
-#ISSUE HERE
-```{r}
-library(lubridate)
-years <- spawn_rows %>%
-  group_by(year) %>%
-  nest() %>%
-  arrange(year) %>%
-  mutate(num_fish = map_int(data, nrow))
-
-years
-#ISSUE HERE, how do we deal with itero fish that have spawned on more than one year?
-#still an issue here, could fix by getting year from teh spawn date column if needed
-```
 
 So, here is a function that takes a data frame called data and returns
 all possible rxys between the IDS in that data frame.
@@ -237,17 +220,6 @@ get_rxys <- function(data) {
 }
 ```
 
-Now, we can apply that to every single one of the years.
-#AKB skipped this
-```{r, eval=FALSE}
-rxys_in_years <- years %>%
-  mutate(pairs = map(data, get_rxys))
-```
-
-Don't evaluate that one in a notebook!  related writes so much to the console that it gets f*&^#d up.  
-
-Because it takes so long to evaluate, too, I will save the result in inst/extdata.  I won't do it
-as package data, cuz it takes too long to move it to the lazyload DB each time I build the package.
 
 ## Wait! Try doing just the pairs you need for each day
 
@@ -256,29 +228,13 @@ too big!  So, maybe it would make more sense to just compile up all the pairs
 for each day.  Given that we don't see the same individual on too many different days,
 that should be fine...
 
-But, another question I have is whether there are Corrected Spawn dates in the trios that
-don't appear in the `id_sex_date`.  Let's check that out:
-#AKB skipped this
-```{r, eval = FALSE}
-missing_dad_dates <- trios %>%
-  anti_join(id_sex_date, by = c("Pa_ID" = "NMFS_DNA_ID", "Corrected_ParentSpawn_Date" = "COLLECTION_DATE")) %>%
-  select(Pa_ID, Corrected_ParentSpawn_Date) %>%
-  rename(NMFS_DNA_ID = Pa_ID)
 
-missing_mom_dates <- trios %>%
-  anti_join(id_sex_date, by = c("Ma_ID" = "NMFS_DNA_ID", "Corrected_ParentSpawn_Date" = "COLLECTION_DATE")) %>%
-  select(Ma_ID, Corrected_ParentSpawn_Date) %>%
-  rename(NMFS_DNA_ID = Ma_ID)
-```
-
-It turn out that those are trios that are missing a collection date.  There aren't many of them,
-so I will just chuck them out, eventually.
 
 But, for now, we will compute the rxys between pairs on a daily basis.  Pretty mellow
 given the machinery that we have prepared above. Note that we may as well filter out any days
 that we don't have returning trios for.  This might toss out some of the dates that list one spawner.
 #AKB resuming here to try by date
-#Need to seperate by hatcheries -- Warm springs and coyote valley
+#Seperated by hatcheries -- Warm springs and coyote valley
 ```{r}
 library(lubridate)
 trios <- read_csv("./inst/extdata/RR_pedigree_07-20_known_sexes_and_dates.csv")
@@ -331,7 +287,7 @@ Reassuringly, there are not any days with 1 spawner that produced trios....
 
 Anyway, now that we have 171 different days, from which some trios were
 identified, we can compute the rxys for all the possible parents on those days.
-```{r}
+```{r, eval=FALSE}
 rxys_in_days_WS <- day_fish_WS %>%
   mutate(pairs = map(data, get_rxys))
 
@@ -394,145 +350,7 @@ That will preserve the (extra) variance that is due to the fact that we don't ha
 number of individuals from each pair, etc. So, I just need to figure out how to
 do that efficiently.  
 
-## Some Checking.  Problems with conflicting sex assignments
 
-Unfortunately, there are some glitches in the data.  Problems occur, for example, when a mom is listed
-in the trios, but does not appears in the list of females that were spawned that day.  Grrr...
-
-So, there are a couple of things that might happen:
-
-1. Ma is not amongst females nor males
-2. Ma is not amongst females, but is in males.  
-
-And same for males.  So, let's just do a quick check.
-#AKB Skipped this
-```{r, eval = FALSE}
-missy <- interm1 %>%
-  mutate(num_ma_totally_absent = map2_int(trios, spawners,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$ma, s$indiv))
-                                          }),
-         num_ma_absent_among_females = map2_int(trios, spawners,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$ma, s$indiv[s$new_sex == "Female"]))
-                                          }),
-         num_pa_totally_absent = map2_int(trios, spawners,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$pa, s$indiv))
-                                          }),
-         num_pa_absent_among_males = map2_int(trios, spawners,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$pa, s$indiv[s$new_sex == "Male"]))
-                                          })
-         )
-```
-
-If we look at that, we see that the individual ma or pa is always found amongst the
-spawners, but sometimes the sex is incorrect.  So, that is messed up.
-
-However, it might not be a huge problem so long as no spawners are listed
-as both males and females on any particular day, both in the spawner records and
-also in the trios, 'cuz then we should be able to just
-swap their sexes around to fix the problem.
-
-First, see if any spawners on a day are more than once with the same sex, and also twice with
-different sexes...
-
-```{r}
-two_faced_sexes <- interm1 %>%
-  mutate(n_spawn_dupes = map_int(spawners, 
-                                 function(x) {
-                                   x  %>% count(indiv) %>% filter(n > 1) %>% nrow()
-                                 } ),
-         n_both_sexes = map_int(trios,
-                                function(tdf) {
-                                   length(intersect(tdf$pa, tdf$ma))
-                                })
-         
-  )
-
-two_faced_sexes
-```
-
-OK, that is messed up.  There are days where the same individual can 
-show up in the Pa_ID column and also in the Ma_ID column.  That stuffs
-things up a fair bit, making it harder to do the permutations.
-
-So, what fraction of days is that:
-
-```{r}
-mean(two_faced_sexes$n_both_sexes > 0)
-```
-
-So, about 8 percent of those days.  I guess I could just toss those out for now, because on the
-remaining days it should be easy to correct the problem by just reassigning the sex of individuals in the
-spawner records.  
-
-I suppose we could just toss those ambiguous indivs out, but it is tidier to just toss out some days.
-
-### Toss out days that have trios with conflicting sex assignments
-#AKB skipped this
-```{r, eval=FALSE}
-keep_days <- two_faced_sexes %>%
-  filter(n_both_sexes == 0) %>%
-  select(spawn_date)
-
-interm2 <- semi_join(interm1, keep_days)
-```
-
-### Reassign sex amongst the recorded spawners
-
-This should not be too hard.  We just make a new column that holds spawners,
-but in which Male and Female have been updated as need be.
-#AKB skippe this
-```{r, eval=FALSE}
-interm3 <- interm1 %>%
-  mutate(spawners_mod = map2(.x = spawners, .y = trios,
-                             .f = function(spaw, tdf) {
-                               spaw %>%
-                                 mutate(new_sex = case_when(
-                                   indiv %in% tdf$ma ~ "Female",
-                                   indiv %in% tdf$pa ~ "Male"
-                                 ))
-                             }))
-```
-
-#AKB skipped this
-```{r, eval = FALSE}
-interm3 %>% 
-  mutate(nf = map_int(spawners_mod, function(x) {x %>% filter(new_sex == "Female") %>% nrow()}),  nf_old = map_int(spawners, function(x) {x %>% filter(new_sex == "Female") %>% 
-      nrow()})) %>% 
-  filter(nf != nf_old)
-```
-
-Let's see if it has corrected the problem:
-#AKB Skipped this
-```{r, eval = FALSE}
-missy3 <- interm3 %>%
-  mutate(num_ma_totally_absent = map2_int(trios, spawners_mod,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$ma, s$indiv))
-                                          }),
-         num_ma_absent_among_females = map2_int(trios, spawners_mod,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$ma, s$indiv[s$new_sex == "Female"]))
-                                          }),
-         num_pa_totally_absent = map2_int(trios, spawners_mod,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$pa, s$indiv))
-                                          }),
-         num_pa_absent_among_males = map2_int(trios, spawners_mod,
-                                          .f = function(tt, s) {
-                                            length(setdiff(tt$pa, s$indiv[s$new_sex == "Male"]))
-                                          })
-         )
-
-missy3 %>%
-  filter(num_pa_absent_among_males > 0 | num_ma_absent_among_females > 0)
-#hmm not sure about this...is this a problem?
-```
-
-That looks to have taken care of that.
 
 
 ## Doing the permutations and extracting Rxy
@@ -600,7 +418,6 @@ extract_permuted_rxy <- function(tdf, rxyp, spaw, nperm = 100) {
 
 
 So, now we just need to use those...
-#switched it to "interm1" instead of "interm3" the code above seemed unnecessary with the 2007-2020 dataset
 ```{r}
 #Warm Springs
 set.seed(100)  # for reproducibility
@@ -821,25 +638,34 @@ seen in the permutations divided by 100.  Let's check it out.
 ```{r}
 # here is how many we would have expected at rxy > 0.5 from the
 # permutations
+sum(permy_dsn_WS$quellergt > 0.5) / 100
 sum(permy_dsn_CV$quellergt > 0.5) / 100
 ```
 which is a fraction of:
 ```{r}
-(sum(permy_dsn_CV$quellergt > 0.5) / 100) / nrow(obs_dsn_WS)
+(sum(permy_dsn_WS$quellergt > 0.5) / 100) / nrow(obs_dsn_WS)
+(sum(permy_dsn_CV$quellergt > 0.5) / 100) / nrow(obs_dsn_CV)
 ```
 which means that we are only expected 0.14% of the offspring under random mating
 would have inbreeding greater than 0.5.
 
 How many did we observe?
 ```{r}
-sum(obs_dsn_CV$quellergt > 0.5)
+obs_dsn_WS %>% filter(quellergt > 0.5) %>% nrow()
+sum(obs_dsn_WS$quellergt > 0.5) # not working
+obs_dsn_CV %>% filter(quellergt > 0.5) %>% nrow()
+obs_dsn_CV %>% arrange(desc(quellergt))
+obs_dsn_WS %>% arrange(desc(quellergt))
 ```
-So, we saw one of those.
+So, we saw two of those for WS, zero for CV.
 
 How about over 0.4?
 ```{r}
-sum(obs_dsn_CV$quellergt > 0.4)
+sum(obs_dsn_CV$quellergt > 0.4) #notworking
+obs_dsn_WS %>% filter(quellergt > 0.4) %>% nrow()
+obs_dsn_CV %>% filter(quellergt > 0.4) %>% nrow()
 ```
+11 for WS, 4 for CV
 So, the effect of inbreeding on survival in this hatchery seems awfully low.  Very interesting.
 
 Let's do some calculations from the Binomial distribution:
@@ -847,7 +673,7 @@ Let's do some calculations from the Binomial distribution:
 RP <- rbinom(n = 1e5, size = nrow(obs_dsn_WS), prob = 0.00107904)
 hist(RP)
 
-RP_CV <- rbinom(n = 1e5, size = nrow(obs_dsn_CV), prob =0.00098161)
+RP_CV <- rbinom(n = 1e5, size = nrow(obs_dsn_CV), prob =0.001399063)
 hist(RP)
 ```
 So, how unusual would it be to find only 1:
@@ -883,6 +709,6 @@ sum(num_over0.5$n_over <= 1)
 sum(num_over0.5_CV$n_over <= 1)
 ```
 
-So, one out of 100 times.  Giving a permutation based p-value of 0.01 (though we would really want to do more permutations...).
+So, three out of 100 times.  Giving a permutation based p-value of 0.03 
+11 out of 100 gives a permutation based pvalue of 0.11
 
-So, it is statistically different, but in this population, it does not make a practical difference.
