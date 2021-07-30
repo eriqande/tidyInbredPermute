@@ -434,6 +434,11 @@ permy_results_CV <- interm1_CV %>%
          )
 ```
 
+```{r}
+permy_results_WS$obs_rxy
+```
+
+
 ## Look at the results
 
 Quick look at means:
